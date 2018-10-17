@@ -12,3 +12,7 @@ DEFINES	+= __TRACE__=1
 DEFINES	+= _DEBUG=1
 
 INCLUDEPATH	+= ../SecurityCode/vCloud/
+INCLUDEPATH	+= ./
+
+HEADERS += \
+    cli_routines.h

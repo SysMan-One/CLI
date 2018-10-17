@@ -45,6 +45,8 @@
 **
 **  MODIFICATION HISTORY:
 **
+**	15-OCT-2018	RRL	A main part of code has been wrote; split CLI API to .C and .H modules.
+**
 **--
 */
 
@@ -52,6 +54,9 @@
 #include	<stdio.h>
 #include	<stdlib.h>
 #include	<errno.h>
+#include	<time.h>
+#include	<sys/stat.h>
+#include	<arpa/inet.h>
 
 /*
 * Defines and includes for enable extend trace and logging
@@ -59,6 +64,7 @@
 #define		__FAC__	"CLI_RTNS"
 #define		__TFAC__ __FAC__ ": "		/* Special prefix for $TRACE			*/
 #include	"utility_routines.h"
+#include	"cli_routines.h"
 
 #define $SHOW_PARM(name, value, format)	$IFTRACE(q_trace, ": " #name " = " format, (value))
 #define $SHOW_PTR(var)			$SHOW_PARM(var, var, "%p")
@@ -68,126 +74,6 @@
 #define $SHOW_ULL(var)			$SHOW_PARM(var, ((unsigned long long) var), "%llu")
 #define $SHOW_UNSIGNED(var)		$SHOW_PARM(var, var, "0x%08x")
 #define $SHOW_BOOL(var)			$SHOW_PARM(var, (var ? "ENABLED(TRUE)" : "DISABLED(FALSE)"), "%s");
-
-/*
- * Parameters (P1 - P8)
- */
-#define	CLI$K_P1	1	/* Position depended parameters	*/
-#define	CLI$K_P2	2
-#define	CLI$K_P3	3
-#define	CLI$K_P4	4
-#define	CLI$K_P5	5
-#define	CLI$K_P6	6
-#define	CLI$K_P7	7
-#define	CLI$K_P8	8
-
-#define	CLI$K_QUAL	4	/* Qualifier*/
-
-				/* Parameter/Value - types	*/
-#define	CLI$K_FILE	1
-#define	CLI$K_DATE	2
-#define	CLI$K_NUM	3	/* Numbe: Octal, Decimal, Hex	*/
-#define	CLI$K_IPV4	4	/* 212.129.97.4			*/
-#define	CLI$K_IPV6	5
-#define	CLI$K_OPT	7	/* Options - no value		*/
-#define	CLI$K_QSTRING	8	/* Quoted string		*/
-#define	CLI$K_UUID	9	/* Fucken UUID			*/
-#define	CLI$K_DEVICE	0xa	/* A device in the /dev/	*/
-
-#define	CLI$K_KWD	0xb	/* A predefined keyword		*/
-
-
-#define	CLI$M_NEGATABLE	1	/* Qualifier can be negatable	*/
-#define	CLI$M_LIST	2
-#define	CLI$M_PRESENT	4
-
-#define	CLI$S_MAXVERBL	32	/* Maximum verb's length	*/
-
-
-typedef	struct __ascic__	{
-	unsigned char	len,
-			sts[255];
-} ASCIC;
-
-#define	$ASCNIL		0,0
-
-typedef	struct __cli_keyword__	{
-	ASCIC		name;	/* Keyword's string itself	*/
-	unsigned long long val;	/* Associated value		*/
-} CLI_KEYWORD;
-
-typedef	struct __cli_param__	{
-	ASCIC		name;	/* A short name of the parameter*/
-	unsigned	type;	/* FILE, DATE ...		*/
-	unsigned	flag;	/* */
-
-	ASCIC		defval;	/* Default value string		*/
-
-	CLI_KEYWORD *	kwd;	/* A list of keywords		*/
-
-	unsigned	pn;	/* P1, P2, ... P8		*/
-
-} CLI_PARAM;
-
-typedef	struct __cli_qual__	{
-	ASCIC		name;	/* Qualifier name		*/
-	unsigned	type;	/* FILE, DATE ...		*/
-	unsigned	flag;	/* */
-
-	ASCIC		defval;	/* Default value string		*/
-
-	CLI_KEYWORD *	kwd;	/* A list of keywords		*/
-} CLI_QUAL;
-
-typedef	struct __cli__verb__	{
-	ASCIC		name;
-
-	struct __cli__verb__ *next;
-
-	CLI_PARAM	*params;
-	CLI_QUAL	*quals;
-
-	int	(*act_rtn) (__unknown_params);
-	void	*act_arg;
-
-} CLI_VERB;
-
-typedef	struct	__cli_avp__{
-	struct	__cli_avp__ *link;/* Double-linked list stuff	*/
-
-	unsigned	type;	/* 0 - verb, P1 - P8, QUAL	*/
-
-	union	{
-		CLI_VERB	*verb;
-				/* An address of the CLI's	*/
-				/* parameters or qualifiers	*/
-				/* definition structure		*/
-		CLI_PARAM	*param;
-		CLI_QUAL	*qual;
-	};
-
-	ASCIC		val;	/* Value string			*/
-
-} CLI_AVP;
-
-/*
- *	A context to keep has been parsed command line:
- *		verb parameters, qualifiers
- */
-
-/* Processing options		*/
-#define	CLI$M_OPTRACE	1
-#define	CLI$M_OPSIGNAL	2
-
-typedef struct __cli_ctx__
-{
-	int	opts;
-
-	CLI_AVP		*vlist;	/* A list of verbs' sequence for
-				  a command			*/
-	CLI_AVP		*avlist;	/* A list of parameters' values
-				  and qualifiers		*/
-} CLI_CTX;
 
 
 static	char *cli$val_type	(
@@ -210,6 +96,100 @@ static	char *cli$val_type	(
 	return	"ILLEGAL";
 }
 
+/*
+ *
+ *  DESCRIPTION: Check a input value for the parameter/qualifier corresponding has been declared type
+
+ *
+ *  INPUT:
+ *	clictx:	CLI-context has been created by cli$parse()
+ *	pqdesc:	Parameter/Qualifier descriptior
+ *	val:	an ASCIC string to be checked
+ *
+ *  RETURN:
+ *	SS$_NORMAL, condition status
+ *
+ */
+static	int	cli$val_check	(
+		CLI_CTX		*clictx,
+		CLI_PQDESC	*pqdesc,
+			ASC	*val
+				)
+{
+unsigned long long int	status = -1;
+char	buf[NAME_MAX], *cp;
+
+	switch (pqdesc->type)
+		{
+		case	CLI$K_IPV4:
+		case	CLI$K_IPV6:
+			if ( 1 !=  inet_pton(pqdesc->type == CLI$K_IPV4 ? AF_INET : AF_INET6, $ASCPTR(val), buf) )
+				return	(clictx->opts & CLI$M_OPSIGNAL)
+					? $LOG(STS$K_ERROR, "Value '%.*s' cannot be converted, errno=%d", $ASC(val), errno)
+					: STS$K_ERROR;
+			break;
+
+		case	CLI$K_NUM:
+			strtoull($ASCPTR(val), &cp, 0);
+
+			if (errno == ERANGE )
+				return	(clictx->opts & CLI$M_OPSIGNAL)
+					? $LOG(STS$K_ERROR, "Value '%.*s' cannot be converted, errno=%d", $ASC(val), errno)
+					: STS$K_ERROR;
+
+			break;
+
+		case	CLI$K_DATE:
+			{
+			struct tm _tm = {0};
+
+			if ( 3 > (status = sscanf ($ASCPTR(val), "%2d-%2d-%4d%c%2d:%2d:%2d",
+					&_tm.tm_mday, &_tm.tm_mon, &_tm.tm_year,
+					&status,
+					&_tm.tm_hour, &_tm.tm_min, &_tm.tm_sec)) )
+				return	(clictx->opts & CLI$M_OPSIGNAL)
+					? $LOG(STS$K_ERROR, "Illformed date/time value '%.*s'",  $ASC(val))
+					: STS$K_ERROR;
+			break;
+			}
+
+		case	CLI$K_DEVICE:
+			{
+			struct stat st = {0};
+
+			if ( !(cp = strstr($ASCPTR(val), "dev/")) )
+				sprintf(cp  = buf, "/dev/%.*s", $ASC(val));
+			else	cp = $ASCPTR(val);
+
+			if ( stat(cp, &st) )
+				return	(clictx->opts & CLI$M_OPSIGNAL)
+					? $LOG(STS$K_ERROR, "stat(%s), errno=%d", cp, errno)
+					: STS$K_ERROR;
+			break;
+			}
+
+		case	CLI$K_UUID:
+			{
+			if ( 6 != (status = sscanf ($ASCPTR(val), "%08x-%04x-%04x-%04x-%012x",
+						   &status, &status, &status, &status, &status, &status, &status, &status)) )
+				return	(clictx->opts & CLI$M_OPSIGNAL)
+					? $LOG(STS$K_ERROR, "Illformat UUID value '%.*s'", $ASC(val))
+					: STS$K_ERROR;
+
+			break;
+			}
+
+		default:
+			return	(clictx->opts & CLI$M_OPSIGNAL)
+				? $LOG(STS$K_ERROR, "Unknow type of value '%.*s'", $ASC(val))
+				: STS$K_ERROR;
+
+
+		}
+
+
+	return	STS$K_SUCCESS;
+}
 
 static	int	cli$add_item2ctx	(
 		CLI_CTX		*clictx,
@@ -218,10 +198,10 @@ static	int	cli$add_item2ctx	(
 		char		*val
 			)
 {
-CLI_AVP	*avp, *avp2;
+CLI_ITEM	*avp, *avp2;
 
 	/* Allocate memory for new CLI's param/qual value entry */
-	if ( !(avp = calloc(1, sizeof(CLI_AVP))) )
+	if ( !(avp = calloc(1, sizeof(CLI_ITEM))) )
 		{
 		return	(clictx->opts & CLI$M_OPSIGNAL)
 			? $LOG(STS$K_ERROR, "Insufficient memory, errno=%d", errno)
@@ -229,34 +209,34 @@ CLI_AVP	*avp, *avp2;
 		}
 
 	/* Store a given item: parameter or qualifier into the context */
-	avp->type = type;
-	__util$str2asc (val, &avp->val);
+	if ( val )
+		__util$str2asc (val, &avp->val);
 
 	if ( !type )
 		{
 		avp->verb = item;
 
 		/* Run over list down to last item */
-		for ( avp2 = clictx->vlist; avp2 && avp2->link; avp2 = avp2->link);
+		for ( avp2 = clictx->vlist; avp2 && avp2->next; avp2 = avp2->next);
 
 		/* Insert new item into the CLI context list */
 		if ( avp2 )
-			avp2->link = avp;
+			avp2->next = avp;
 		else	clictx->vlist = avp;
 
 		return	STS$K_SUCCESS;
 		}
 
 	if ( CLI$K_QUAL == type )
-		avp->qual = item;
-	else	avp->param =  item;
+		avp->pqdesc = item;
+	else	avp->pqdesc =  item;
 
 	/* Run over list down to last item */
-	for ( avp2 = clictx->avlist; avp2 && avp2->link; avp2 = avp2->link);
+	for ( avp2 = clictx->avlist; avp2 && avp2->next; avp2 = avp2->next);
 
 	/* Insert new item into the CLI context list */
 	if ( avp2 )
-		avp2->link = avp;
+		avp2->next = avp;
 	else	clictx->avlist = avp;
 
 	return	STS$K_SUCCESS;
@@ -268,9 +248,9 @@ void	cli$show_verbs	(
 		)
 {
 CLI_VERB *verb, *subverb;
-CLI_PARAM *par;
+CLI_PQDESC *par;
 CLI_KEYWORD *kwd;
-CLI_QUAL *qual;
+CLI_PQDESC *qual;
 char	spaces [64];
 
 	memset(spaces, ' ', sizeof(spaces));
@@ -312,11 +292,11 @@ char	spaces [64];
 }
 
 
-static void	cli$show_ctx	(
+void	cli$show_ctx	(
 		CLI_CTX	*	clictx
 		)
 {
-CLI_AVP	*avp;
+CLI_ITEM	*avp;
 char	spaces [64];
 int	splen = 0;
 
@@ -326,14 +306,14 @@ int	splen = 0;
 
 
 	/* Run over command's verbs list ... */
-	for ( splen = 2, avp = clictx->vlist; avp; avp = avp->link, splen += 2)
+	for ( splen = 2, avp = clictx->vlist; avp; avp = avp->next, splen += 2)
 		$LOG(STS$K_INFO, "%.*s %.*s  ('%.*s')", splen, spaces, $ASC(&avp->verb->name), $ASC(&avp->val));
 
-	for ( avp = clictx->avlist; avp; avp = avp->link)
+	for ( avp = clictx->avlist; avp; avp = avp->next)
 		{
 		if ( avp->type != CLI$K_QUAL )
-			$LOG(STS$K_INFO, "   P%d[0:%d]='%.*s'", avp->param->pn, $ASCLEN(&avp->val), $ASC(&avp->val));
-		else	$LOG(STS$K_INFO, "   /%.*s[0:%d]='%.*s'", $ASC(&avp->qual->name), $ASCLEN(&avp->val), $ASC(&avp->val));
+			$LOG(STS$K_INFO, "   P%d[0:%d]='%.*s'", avp->pqdesc->pn, $ASCLEN(&avp->val), $ASC(&avp->val));
+		else	$LOG(STS$K_INFO, "   /%.*s[0:%d]='%.*s'", $ASC(&avp->pqdesc->name), $ASCLEN(&avp->val), $ASC(&avp->val));
 		}
 }
 
@@ -427,7 +407,7 @@ static	int	cli$parse_quals(
 		char ** argv
 			)
 {
-CLI_QUAL	*qrun, *qsel = NULL;
+CLI_PQDESC	*qrun, *qsel = NULL;
 int		status, len, i, qlog = clictx->opts & CLI$M_OPTRACE;
 char		*aptr, *vptr;
 
@@ -496,7 +476,7 @@ static	int	cli$parse_params(
 		char ** argv
 			)
 {
-CLI_PARAM	*param;
+CLI_PQDESC	*param;
 int		status, pi, qlog = clictx->opts & CLI$M_OPTRACE;
 
 	/*
@@ -520,8 +500,6 @@ int		status, pi, qlog = clictx->opts & CLI$M_OPTRACE;
 
 	return	status;
 }
-
-
 
 /*
  *
@@ -606,7 +584,7 @@ char		*pverb;
 
 	/* Found something ?*/
 	if ( !vsel )
-		return	(clictx->opts & CLI$M_OPSIGNAL) ? $LOG(STS$K_FATAL, "Unrecognized command verb '%s.*'", len, pverb) : STS$K_FATAL;
+		return	(clictx->opts & CLI$M_OPSIGNAL) ? $LOG(STS$K_FATAL, "Unrecognized command verb '%.*s'", len, pverb) : STS$K_FATAL;
 
 	/*
 	 * Ok, we has got in 'vsel' a legal verb, so
@@ -681,31 +659,53 @@ CLI_CTX	*ctx;
 
 /*
  *
- *  DESCRIPTION: parsing input list of arguments by using a command's verbs definition is provided by 'verbs'
- *		syntax definition. Internaly performs command verb matching and calling other CLI-routines to parse 'parameters'
- *		and 'qualifiers'.
- *		Create a CLI-context area is supposed to be used by cli$get_value() routine to extratct a parameter value.
+ *  DESCRIPTION: retreive a value of the parameter or qualifier from the CLI-context has been created and filled by cli$parse().
 
  *  INPUT:
- *	verbs:	commands' verbs definition structure, null entry terminated
- *	opts:	processing options, see CLI$M_OP*
- *	argc:	arguments count
- *	argv:	arguments array
- *
- *  OUTPUT:
- *	ctx:	A CLI-context to be created
+ *	ctx:	A CLI-context has been created by cli$parse()
+ *	pq:	A pointer to parameter/qualifier definition
+ *	val:	A buffer to accept value
  *
  *  RETURN:
+ *	STS$K_WARN	- value is zero length
  *	SS$_NORMAL, condition status
  *
  */
 int	cli$get_value	(
-		CLI_CTX	*clictx,
-		int	opts,
-		ASCIC	*val
+	CLI_CTX		*clictx,
+	CLI_PQDESC	*pq,
+		ASC	*val
 			)
 {
+CLI_ITEM *item;
+
 	/* Sanity check */
+	if ( !clictx )
+		return	$LOG(STS$K_FATAL, "CLI-context is empty");
+
+	if ( !pq )
+		return	$LOG(STS$K_FATAL, "Illegal parameter/qualifier definition");
+
+	for ( item = clictx->avlist; item; item = item->next)
+		{
+		if ( pq  == item->pqdesc )
+			{
+			/* Do we need to return a qualifier value to caller ?*/
+			if ( val )
+				{
+				*val = item->val;
+
+				if ( !($ASCLEN(val)) )
+					return	(clictx->opts & CLI$M_OPSIGNAL) ? $LOG(STS$K_WARN, "Zero length value") : STS$K_WARN;
+				}
+
+			return	STS$K_SUCCESS;
+			}
+
+		}
+
+	return	(clictx->opts & CLI$M_OPSIGNAL) ? $LOG(STS$K_ERROR, "No parameter/qualifier ('%.*s') is present in command line",
+						       $ASC(&pq->name)) : STS$K_ERROR;
 }
 
 
@@ -725,25 +725,65 @@ int	cli$cleanup	(
 		)
 {
 
-CLI_AVP	*avp, *avp2;
+CLI_ITEM	*avp, *avp2;
 
+	/* Run over verb's items list and free has been alocated memory ...*/
 	for (avp = clictx->vlist; avp; )
 		{
 		avp2 = avp;
-		avp = avp->link;
+		avp = avp->next;
 		free(avp2);
 		}
 
+	/* Run over vlaue's items list and free has been alocated memory ...*/
 	for (avp = clictx->avlist; avp; )
 		{
 		avp2 = avp;
-		avp = avp->link;
+		avp = avp->next;
 		free(avp2);
 		}
 
+	/* Release CLI-context area */
 	free(clictx);
 
 	return	STS$K_SUCCESS;
+}
+
+
+/*
+ *
+ *  DESCRIPTION: dispatch processing to action routine has been defined for the last verb's keyword.
+ *
+ *  INPUT:
+ *	ctx:	A CLI-context has been created by cli$parse()
+ *
+ *  RETURN:
+ *	SS$_NORMAL, condition status
+ *
+ */
+int	cli$dispatch	(
+		CLI_CTX	*clictx
+			)
+{
+CLI_ITEM	*item;
+CLI_VERB	*verb;
+
+	/* Run over verb's items to last element */
+	for ( item = clictx->vlist; item && item->next; item = item->next);
+
+	if ( !item )
+		return	(clictx->opts & CLI$M_OPSIGNAL) ? $LOG(STS$K_FATAL, "No verb's item has been found in CLI-context") : STS$K_FATAL;
+
+	if ( !(verb = item->verb)  )
+		return	(clictx->opts & CLI$M_OPSIGNAL) ? $LOG(STS$K_FATAL, "No verb has been found in CLI-context") : STS$K_FATAL;
+
+	$IFTRACE(clictx->opts & CLI$M_OPTRACE, "Action routine=%#x, argument=%#x", verb->act_rtn, verb->act_arg);
+
+	if ( verb->act_rtn )
+		return	verb->act_rtn(clictx, verb->act_arg);
+
+	return	(clictx->opts & CLI$M_OPSIGNAL) ? $LOG(STS$K_WARN, "No action routine has been defined for '%.*s'", verb->name) : STS$K_WARN;
+
 }
 
 
@@ -760,6 +800,7 @@ CLI_AVP	*avp, *avp2;
 
 	DIFF	<p1-file-name> <p2-file-name> /BLOCK=(START=<lbn>, END=<lbn>, COUNT=<lbn>)
 			/IGNORE=(ERROR) /LOGGING=(FULL, TRACE, ERROR)
+
 */
 
 enum	{
@@ -787,7 +828,7 @@ CLI_KEYWORD	diff_log_opts[] = {
 			{ .name = {$ASCINI("VM")},	.val = SHOW$K_VM},
 			{0}};
 
-CLI_QUAL	diff_quals [] = {
+CLI_PQDESC	diff_quals [] = {
 			{ .name = {$ASCINI("START")},	.type = CLI$K_NUM},
 			{ .name = {$ASCINI("END")},	.type = CLI$K_NUM},
 			{ .name = {$ASCINI("COUNT")},	.type = CLI$K_NUM},
@@ -808,7 +849,7 @@ CLI_QUAL	diff_quals [] = {
 			{ .name = {$ASCINI("FULL")},	CLI$K_OPT},
 			{0}};
 
-CLI_PARAM	diff_params [] = {
+CLI_PQDESC	diff_params [] = {
 			{.pn = CLI$K_P1, .type = CLI$K_FILE, .name = {$ASCINI("Input file 1")} },
 			{.pn = CLI$K_P2, .type = CLI$K_FILE, .name = {$ASCINI("Input file 2")} },
 			{0}},
@@ -826,8 +867,8 @@ CLI_PARAM	diff_params [] = {
 			{0}};
 
 
-int	diff_action	( void *clictx, void *arg);
-int	show_action	( void *clictx, void *arg);
+int	diff_action	( CLI_CTX *clictx, void *arg);
+int	show_action	( CLI_CTX *clictx, void *arg);
 
 CLI_VERB	show_what []  = {
 	{ {$ASCINI("volume")},	.params = show_volume_params, .quals = show_volume_quals , .act_rtn = show_action, .act_arg = SHOW$K_VOLUME },
@@ -841,19 +882,35 @@ CLI_VERB	top_commands []  = {
 	{ .name = {$ASCINI("show")}, .next = show_what},
 	{0}};
 
-ASCIC	prompt = {$ASCINI("CRYPTORCP>")};
+ASC	prompt = {$ASCINI("CRYPTORCP>")};
 
 
-int	diff_action	( void *clictx, void *arg)
+int	diff_action	(
+		CLI_CTX		*clictx,
+			void	*arg
+			)
 {
+int	status;
+ASC	fl1, fl2;
+
+	$IFTRACE(clictx->opts & CLI$M_OPTRACE, "Action routine is just called!");
+
+	status = cli$get_value(clictx, &diff_params, &fl1);
+
+	status = cli$get_value(clictx, &diff_params, &fl2);
+
+	$IFTRACE(clictx->opts & CLI$M_OPTRACE, "Comparing %.*s vs %.*s", $ASC(&fl1), $ASC(&fl2));
+
+
+	$IFTRACE(clictx->opts & CLI$M_OPTRACE, "Action routine has been completed!");
 
 	return	STS$K_SUCCESS;
 }
 
-int	show_action	( void *clictx, void *arg)
+int	show_action	( CLI_CTX *clictx, void *arg)
 {
 int	what = (int) arg, status;
-ASCIC	val;
+ASC	val;
 
 
 	switch	( what )
@@ -879,6 +936,20 @@ int main	(int	argc, char **argv)
 int	status;
 void	*clictx = NULL;
 
+	{
+
+	struct tm _tm = {0};
+
+	status = sscanf ("15-10-2018-15:17:13", "%2d-%2d-%4d%c%2d:%2d:%2d",
+			&_tm.tm_mday, &_tm.tm_mon, &_tm.tm_year,
+			&status,
+			&_tm.tm_hour, &_tm.tm_min, &_tm.tm_sec);
+
+	return	0;
+	}
+
+
+
 	/* Dump to screen verbs definitions */
 	cli$show_verbs (top_commands, 0);
 
@@ -890,8 +961,8 @@ void	*clictx = NULL;
 	cli$show_ctx (clictx);
 
 	/* Process command line arguments */
-//	if ( !(1 & (status = cli$dispatch (clictx, CLI$M_OPTRACE | CLI$M_OPSIGNAL))) )
-//		return	-EINVAL;
+	if ( !(1 & (status = cli$dispatch (clictx))) )
+		return	-EINVAL;
 
 	/* Release hass been allocated resources */
 	cli$cleanup(clictx);
