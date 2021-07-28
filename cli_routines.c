@@ -103,7 +103,7 @@ static	char *cli$val_type	(
  *
  *  INPUT:
  *	clictx:	CLI-context has been created by cli$parse()
- *	pqdesc:	Parameter/Qualifier descriptior
+ *	pqdesc:	Parameter/Qualifier descriptor
  *	val:	an ASCIC string to be checked
  *
  *  RETURN:
@@ -181,7 +181,7 @@ char	buf[NAME_MAX], *cp;
 
 		default:
 			return	(clictx->opts & CLI$M_OPSIGNAL)
-				? $LOG(STS$K_ERROR, "Unknow type of value '%.*s'", $ASC(val))
+				? $LOG(STS$K_ERROR, "Unknown  type of value '%.*s'", $ASC(val))
 				: STS$K_ERROR;
 
 
@@ -311,7 +311,7 @@ int	splen = 0;
 
 	for ( avp = clictx->avlist; avp; avp = avp->next)
 		{
-		if ( avp->type != CLI$K_QUAL )
+		if ( avp->type )
 			$LOG(STS$K_INFO, "   P%d[0:%d]='%.*s'", avp->pqdesc->pn, $ASCLEN(&avp->val), $ASC(&avp->val));
 		else	$LOG(STS$K_INFO, "   /%.*s[0:%d]='%.*s'", $ASC(&avp->pqdesc->name), $ASCLEN(&avp->val), $ASC(&avp->val));
 		}
@@ -400,7 +400,7 @@ int	qlog = opts & CLI$M_OPTRACE;
  *	SS$_NORMAL, condition status
  *
  */
-static	int	cli$parse_quals(
+static	int	_cli$parse_quals(
 	CLI_CTX	*	clictx,
 	CLI_VERB	*verb,
 		int	argc,
@@ -420,7 +420,7 @@ char		*aptr, *vptr;
 			aptr++;
 		else	continue;
 
-		/* Is there '=' and vlue ? */
+		/* Is there '=' and value ? */
 		if ( vptr = strchr(aptr, '=') )
 			len = vptr - aptr;
 		else	len = strnlen(aptr, ASC$K_SZ);
@@ -469,7 +469,7 @@ char		*aptr, *vptr;
  *	SS$_NORMAL, condition status
  *
  */
-static	int	cli$parse_params(
+static	int	_cli$parse_params(
 	CLI_CTX	*	clictx,
 	CLI_VERB	*verb,
 		int	argc,
@@ -496,7 +496,7 @@ int		status, pi, qlog = clictx->opts & CLI$M_OPTRACE;
 		return	(clictx->opts & CLI$M_OPSIGNAL) ? $LOG(STS$K_FATAL, "Missing P%d - %.*s !", param->pn, $ASC(&param->name)) : STS$K_FATAL;
 
 	/* Now we can extract qualifiers ... */
-	status = cli$parse_quals(clictx, verb, argc - pi, argv + pi);
+	status = _cli$parse_quals(clictx, verb, argc - pi, argv + pi);
 
 	return	status;
 }
@@ -506,7 +506,7 @@ int		status, pi, qlog = clictx->opts & CLI$M_OPTRACE;
  *  DESCRIPTION: parsing input list of arguments by using a command's verbs definition is provided by 'verbs'
  *		syntax definition. Internaly performs command verb matching and calling other CLI-routines to parse 'parameters'
  *		and 'qualifiers'.
- *		Create a CLI-context area is supposed to be used by cli$get_value() routine to extratct a parameter value.
+ *		Create a CLI-context area is supposed to be used by cli$get_value() routine to extract a parameter value.
 
  *  INPUT:
  *	verbs:	commands' verbs definition structure, null entry terminated
@@ -521,7 +521,7 @@ int		status, pi, qlog = clictx->opts & CLI$M_OPTRACE;
  *	SS$_NORMAL, condition status
  *
  */
-static	int	cli$parse_verb	(
+static	int	_cli$parse_verb	(
 	CLI_CTX		*clictx,
 	CLI_VERB *	verbs,
 		int	argc,
@@ -596,12 +596,12 @@ char		*pverb;
 
 	/* Is there a next subverb ? */
 	if ( vsel->next )
-		status = cli$parse_verb	(clictx, vsel, argc - 1, argv++);
+		status = _cli$parse_verb	(clictx, vsel, argc - 1, argv++);
 	else	{
 		if ( ( !vsel->params) && (!vsel->quals) )
 			return	STS$K_SUCCESS;
 
-		status = cli$parse_params(clictx, vsel, argc - 1, argv + 1);
+		status = _cli$parse_params(clictx, vsel, argc - 1, argv + 1);
 		}
 
 	return	status;
@@ -610,8 +610,8 @@ char		*pverb;
 
 /*
  *
- *  DESCRIPTION: a top level routine -as main entry for the CLI parsing.
- *		Create a CLI-context area is supposed to be used by cli$get_value() routine to extratct a parameter value.
+ *  DESCRIPTION: a top level routine - as main entry for the CLI parsing.
+ *		Create a CLI-context area is supposed to be used by cli$get_value() routine to extract a parameter value.
 
  *  INPUT:
  *	verbs:	commands' verbs definition structure, null entry terminated
@@ -652,7 +652,7 @@ CLI_CTX	*ctx;
 	ctx->opts = opts;
 
 
-	status = cli$parse_verb(*clictx, verbs, argc, argv);
+	status = _cli$parse_verb(*clictx, verbs, argc, argv);
 
 	return	STS$K_SUCCESS;
 }
@@ -782,9 +782,11 @@ CLI_VERB	*verb;
 	if ( verb->act_rtn )
 		return	verb->act_rtn(clictx, verb->act_arg);
 
-	return	(clictx->opts & CLI$M_OPSIGNAL) ? $LOG(STS$K_WARN, "No action routine has been defined for '%.*s'", verb->name) : STS$K_WARN;
+	return	(clictx->opts & CLI$M_OPSIGNAL) ? $LOG(STS$K_WARN, "No action routine has been defined") : STS$K_WARN;
 
 }
+
+
 
 
 #ifdef	__CLI_DEBUG__
@@ -945,7 +947,7 @@ void	*clictx = NULL;
 			&status,
 			&_tm.tm_hour, &_tm.tm_min, &_tm.tm_sec);
 
-	return	0;
+	//return	0;
 	}
 
 

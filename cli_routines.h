@@ -47,7 +47,7 @@ extern "C" {
 #define	CLI$K_P7	7
 #define	CLI$K_P8	8
 
-#define	CLI$K_QUAL	4	/* Qualifier*/
+#define	CLI$K_QUAL	9	/* Qualifier*/
 
 				/* Parameter/Value - types	*/
 #define	CLI$K_FILE	1
@@ -69,7 +69,7 @@ extern "C" {
 
 #define	CLI$S_MAXVERBL	32	/* Maximum verb's length	*/
 
-#ifndef	__ASC_TYPE__
+#ifdef	__ASC_TYPE__
 typedef	struct __asc__	{
 	unsigned char	len,
 			sts[255];
